@@ -1,0 +1,871 @@
+import fs from 'fs';
+import path from 'path';
+import https from 'https';
+import http from 'http';
+import { URL, pathToFileURL } from 'url';
+import { spawn, spawnSync } from 'child_process';
+
+const __dirname = process.cwd();
+
+// === NATIVE HTTP (no npm deps) ===
+function nativeGet(url, opts = {}, _redirects = 0) {
+  return new Promise((resolve, reject) => {
+    if (_redirects > 10) return reject(new Error('Too many redirects'));
+    let parsed;
+    try { parsed = new URL(url); } catch (e) { return reject(e); }
+    const mod = parsed.protocol === 'https:' ? https : http;
+    const req = mod.request({
+      hostname: parsed.hostname,
+      path:     parsed.pathname + parsed.search,
+      method:   'GET',
+      headers:  opts.headers || {},
+      timeout:  opts.timeout || 30000,
+    }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        return resolve(nativeGet(res.headers.location, opts, _redirects + 1));
+      }
+      resolve(res);
+    });
+    req.on('timeout', () => { req.destroy(new Error('Request timed out')); });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+function nativeGetText(url, opts = {}) {
+  return nativeGet(url, opts).then(res => new Promise((resolve, reject) => {
+    let data = '';
+    res.on('data', c => data += c);
+    res.on('end', () => resolve(data));
+    res.on('error', reject);
+  }));
+}
+
+function nativeDownload(url, destPath, opts = {}) {
+  return nativeGet(url, { ...opts, timeout: 120000 }).then(res => new Promise((resolve, reject) => {
+    const writer = fs.createWriteStream(destPath);
+    res.pipe(writer);
+    writer.on('finish', resolve);
+    writer.on('error', reject);
+  }));
+}
+
+function extractZip(zipPath, destDir) {
+  let result = spawnSync('unzip', ['-o', '-q', zipPath, '-d', destDir], { stdio: 'pipe' });
+  if (!result || result.status !== 0) {
+    result = spawnSync('python3', ['-c',
+      `import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])`,
+      zipPath, destDir
+    ], { stdio: 'pipe' });
+  }
+  if (!result || (result.status !== 0 && result.status !== null)) {
+    throw new Error('Zip extraction failed — unzip and python3 both unavailable or failed');
+  }
+}
+
+// === PATHS ===
+const TEMP_DIR    = path.join(__dirname, '.wbot', 'cache', 'core_bundle');
+const EXTRACT_DIR = path.join(TEMP_DIR, 'core');
+
+// === CDN MIRROR POOL ===
+const _registry = [
+  'https://api.wolf-core.net/v1/stream/XsxeiT8WyTLHUZwb3SnHsf7fBdFwSLCFN8U9D5X3CP8',
+  'https://api.wolf-core.net/v1/stream/dLwb9AjspYNecvCVI0rBvVrx1N5Zlora4KfztDsYfFL',
+  'https://api.wolf-core.net/v1/stream/31J4c1izTPHDe0wEHYUHsMObgfYiQnVMtvxHeDL0Snf',
+  'https://api.wolf-core.net/v1/stream/Qqa9BaNvepv5WUct9E0NhgOvCKv7K8DJ8rsBIp5q1T7',
+  'https://api.wolf-core.net/v1/stream/XUjHI32tujzYnTAJ0NBJrkK4W8sNHvNY711c1y191Oh',
+  'https://api.wolf-core.net/v1/stream/gbNYH7fgnFK3FtEs7DlE9c3eDLOtOBlpTdQ3E4GtmB1',
+  'https://api.wolf-core.net/v1/stream/OxYNpzb2InLyYKJ7PSvCNmMkfFxBThf4PgqWhOwUQIn',
+  'https://api.wolf-core.net/v1/stream/nX2VXPmrlzB26BP57ERm2inKdILaM2XQPI0P0b1Mrmm',
+  'https://api.wolf-core.net/v1/stream/RftOOYOvjyFi2FEH5ZNi4IY3NfKhX4pFUfKtt49zryI',
+  'https://api.wolf-core.net/v1/stream/Lz4DlS3nFdthHANmMZKNNiwsHHNUAwXIqmjfftFS9Od',
+  'https://api.wolf-core.net/v1/stream/gnsnEiMlXNhAi4GNxnSsxtnuGZA1sqNiWVh9hl5hkGP',
+  'https://api.wolf-core.net/v1/stream/5Lqbf7ot8ZjaQc5460MIR01s0t2f1CQ8GMDoX8pLjbM',
+  'https://api.wolf-core.net/v1/stream/Ys37C2TBl2ToUKnh1BII86J2GUGOO0Puqd6wfA2Q9y7',
+  'https://api.wolf-core.net/v1/stream/5bT3lUjMtAvms6tHneGN7dkGAJCdgn3AsQNs6DzK1AD',
+  'https://api.wolf-core.net/v1/stream/0bHSUsjezwTIkTs4FXxaKIdxvO1YtOt3m5VWOY8seNX',
+  'https://api.wolf-core.net/v1/stream/VzTZ0pViFW7wXfWEvYx4usj2PylGiUBa6vXCrkebBSv',
+  'https://api.wolf-core.net/v1/stream/4reqOogvUo2WxFKCzih5lE7N1D42P22atimI354FwS5',
+  'https://api.wolf-core.net/v1/stream/Q0emA7ustl5QZlQy0yjrlbEcrVnVwwJHqjLnLArRQTN',
+  'https://api.wolf-core.net/v1/stream//rSRG8G9UcFvMoABtsQnceKAViUBKZvh53xCpJ/DGsi',
+  'https://api.wolf-core.net/v1/stream/bQ7NvDhrFhuVzXG8MyYh2LBghgpbf4naogMbYRBDHVW',
+  'https://api.wolf-core.net/v1/stream/NJeIfB3MjnnXNpcSGjh59991Pp7eRcYi1ppRUxZ2xqb',
+  'https://api.wolf-core.net/v1/stream/cMwpHDvWo1NjTXxK9tgH71e3VeDk2skIDJRzp9At0Yc',
+  'https://api.wolf-core.net/v1/stream/G2rIWl9ezO1BJSdXVQgZmTr089TEKcf9mnOAZomhvJk',
+  'https://api.wolf-core.net/v1/stream/k53Nt0UPNmQvlgvKGm8u8ZXK5SdpsQnuctvkTlc4Qcd',
+  'https://api.wolf-core.net/v1/stream/ePbtv5s7vSRRDCCs46L6QwhQbyBSoHMeTaYix0CLo7m',
+  'https://api.wolf-core.net/v1/stream/bsMJ18ZwhGeggMbAXDaQBfUouvV3dCESEvh0Lz4RIcH',
+  'https://api.wolf-core.net/v1/stream/8oknl3r91FHd5IYxXszWNSbIfOqdo8l0mURHvoxvETS',
+  'https://api.wolf-core.net/v1/stream/HbLH5ritvT4M3Cyv5rhuW2s3CllTyHXjKJaZGEJbDjo',
+  'https://api.wolf-core.net/v1/stream/YC1u67c5YEcdCTPq2zlizF5jqifKf3YgTg34IKdspCt',
+  'https://api.wolf-core.net/v1/stream/41mvvo8GKvzFUvgYHsEZ3rWW0pQA2fgwERIseooKNyh',
+  'https://api.wolf-core.net/v1/stream/Ajui4ld9y0jrRw72DoxmVgH1NPNu8548yR0PMU7D8k3',
+  'https://api.wolf-core.net/v1/stream/17HqSQgFOR77BklEq1CegzipJNypGxBZlALsHNZpPFH',
+  'https://api.wolf-core.net/v1/stream/P0X2YYkA1HSdFHxMgMba6q5DaQrI6TogQ4zPSt6KmT1',
+  'https://api.wolf-core.net/v1/stream/wMXgHm3gbHB0Q2hRC4y2YKbb6eeFF5ViCPMojSpdB9o',
+  'https://api.wolf-core.net/v1/stream/toKUOySIfyeKuvnxmMShszMbTm4RMIyoYXLbQOhCc7m',
+  'https://api.wolf-core.net/v1/stream/iFIEWKy5Qpar9VaMy2VvkozWjKQYLl5Ro2N7FdgooHW',
+  'https://api.wolf-core.net/v1/stream/6I5oKFPGKItwMMpFAnD38aSXBWglWNt05jrP7Ms2TEI',
+  'https://api.wolf-core.net/v1/stream/9ShdnXOus7wI7bYYgeRKa2cm3Mt7DRirRfzk80iQVOG',
+  'https://api.wolf-core.net/v1/stream/HRcWPKU3GAAabpVTMrElslxILN4xwSvmmWB:7Ahfv6O',
+  'https://api.wolf-core.net/v1/stream/bzku0RpPC5TivCK8Uq41LsMU4sbgw8mMokVD2tIJoBK',
+  'https://api.wolf-core.net/v1/stream/tVW5W67HxFVasrKtpEItRjGxyU9VoyUsjbmZ9DRu4iS',
+  'https://api.wolf-core.net/v1/stream/aZJeCAkHcCVZiLDek4VxCteEXSA3sV1qc5BEM1SWEce',
+  'https://api.wolf-core.net/v1/stream/LjM7dMFB73U5pVJW68kwqJdFKqXFeeqFJPuG9AGAdye',
+  'https://api.wolf-core.net/v1/stream/6JDLjKQWjI2oaMocwCBUFUrn5R6PadDwssMoxsI9nqF',
+  'https://api.wolf-core.net/v1/stream/c42i3oY9cqOfG8DL6cK29ReerZVcIw3r5ufOKTBKCLU',
+  'https://api.wolf-core.net/v1/stream/Y3epQY6xPBaPo8i71MwsSM4d8FK1vsblfiEowb6Qt33',
+  'https://api.wolf-core.net/v1/stream/tH4P9QUjCmgRf32jjoAui2Uo0uaMrqPkTMNGIomos4j',
+  'https://api.wolf-core.net/v1/stream/1CMQCBzIvDn0wpzf56UgySypmmqEeWXH9apFaDHZ3pO',
+  'https://api.wolf-core.net/v1/stream/68iXaIihkpBxJO4EYrsCrgKfGjOwWgOvXeLYRC5nfo9',
+  'https://api.wolf-core.net/v1/stream/IcHWVjuG9jqqusggVZVo9rfArPViiUwd2xcn9G0VNtF',
+  'https://api.wolf-core.net/v1/stream/piM0gJisyT50XeByQBh9h0Ybju3f4DqtPm1kI0W2XTM',
+  'https://api.wolf-core.net/v1/stream/B5sj1TiNwC9NpzAVwI2q4qgPlPPhxXocFHZNZPKTC50',
+  'https://api.wolf-core.net/v1/stream/gwedhLlblzicPjrFac11snYWYP9bnCkMk77ABSzfJcZ',
+  'https://api.wolf-core.net/v1/stream/9PXx0DqL496kB7tAKfHA6TkZSAekVAmrgTYzUsljMOs',
+  'https://api.wolf-core.net/v1/stream/wKlEsZhqSI04BeJLKrqX9RZJsFVk4tjMa9HgIusMFQV',
+  'https://api.wolf-core.net/v1/stream/JfDjv1uU6hJ1RVAMoOsXCvpizZrcaQMoEsiXgMwQ8N5',
+  'https://api.wolf-core.net/v1/stream/Wvx7rF50PeFZCvDruTDHEAPKIt5oVhslrwKB9zUAUEQ',
+  'https://api.wolf-core.net/v1/stream/x6YyagMKkxnlvkvSpbREL6JEWyG7vqMMmEaR4Ez3Cla',
+  'https://api.wolf-core.net/v1/stream/Dzg2nGLVCLfByNJLPPIkvGPGrORwn1mh5OlA9mzd8bS',
+  'https://api.wolf-core.net/v1/stream/8K55O47X6VMLGPQnvvFEl5zy9FLxsNUH6DAn1hogp8a',
+  'https://api.wolf-core.net/v1/stream/d6jlZSYlVI42DRvt8H23oEqq5uCMZwOAxRXKcT0krjE',
+  'https://api.wolf-core.net/v1/stream/YGui8ewzCdfroNworUumRwsp3gChji4xkO1ECd3Twlz',
+  'https://api.wolf-core.net/v1/stream/KOu1Aw32bqhgKxX74T8B1oH2uMG0lAdqAqals6RDAQ8',
+  'https://api.wolf-core.net/v1/stream/upA0ex2ivzVkxiajslcJjqGfdFX6EOVGEICv9rL3hWy',
+  'https://api.wolf-core.net/v1/stream/VOGTjqQRTHm1ZNTjYuPzAjwmlerOh7TUsO2A8tozRRZ',
+  'https://api.wolf-core.net/v1/stream/HQKTXk3lPQgEGaI8LWmKGuKv75ydykaVTlHKy0yRS73',
+  'https://api.wolf-core.net/v1/stream/sR1qM91J4NEKyWagzdKDFEWrmWZxgCZElW7KSO33Rxd',
+  'https://api.wolf-core.net/v1/stream/zqGuXU84h9BDxI2Whuixbhko2LIkJnHcUSdRZZI20IN',
+  'https://api.wolf-core.net/v1/stream/zOjiPOW6OPdN7ulSqe1lUsbCXZHafzWnthJpxT6c6kp',
+  'https://api.wolf-core.net/v1/stream/e8fvoLvLU8eWugyZorIQ7xfEhqllu0Or6ljjem9bkME',
+  'https://api.wolf-core.net/v1/stream/inEFRN5BMULUuABxQGUkoiqkBFNgWf1xVedl7ceJ1uo',
+  'https://api.wolf-core.net/v1/stream/JDxpx9TQI4N8WCWFVKqhKMCYzZhM7YxPCK3fJDM1TwF',
+  'https://api.wolf-core.net/v1/stream/LNDHVU36HO7iW3NtTRZNq5GinPXpNL7tXOd9yHxct9k',
+  'https://api.wolf-core.net/v1/stream/041UFHg6p8RCVzde6iQWcVNUToAlBsW5C58viTADS9I',
+  'https://api.wolf-core.net/v1/stream/Wfq0JcJCse0Qaq3avPah2Nu1bCzd0VSMU6NpGkMuT7B',
+  'https://api.wolf-core.net/v1/stream/t6BbdMknMAQsB0k9ziT5037fmMZ0bczMSd9wxUGFnp0',
+  'https://api.wolf-core.net/v1/stream/TmHYSfAgDiuL390aVHn7DJaFwC8nGPgvuUTuhqfjBny',
+  'https://api.wolf-core.net/v1/stream/0roMV91EzWvumsbpYxG3LGoudsljzPIQI6YCZfgKs4y',
+  'https://api.wolf-core.net/v1/stream/aY1ShvTfGWLnegLTKs1vr0ePFTQ2AxwoG42iOv9f5vU',
+  'https://api.wolf-core.net/v1/stream/sBaZBKVBRIrBYMTysBMqQFEeiqIJcXlsRzLSVhdnKmd',
+  'https://api.wolf-core.net/v1/stream/DR1LRd9iOVMRskZEOPWFaAJ8JkWA5OOFPCbP61VmKyK',
+  'https://api.wolf-core.net/v1/stream/PXzwqVPcgcg4XPaPO9UstBfxanBlUwIfpytIE8BPRo2',
+  'https://api.wolf-core.net/v1/stream/KNiitSbgKB2HqCu89tgXpIqZivfvIHEfUjdFcCcfIwV',
+  'https://api.wolf-core.net/v1/stream/pNHQCEHef0YIEq3gU44PkLE3cU2rSKttFji3yUS38Sf',
+  'https://api.wolf-core.net/v1/stream/FVaMsU0yuj85VRibKb2TKIoFfYNs9I4yiYDxLmCiAFK',
+  'https://api.wolf-core.net/v1/stream/pNKFmNgbTCRrsMeOPE6mpcq0E4yKJb0f6g4DGDZ22Gu',
+  'https://api.wolf-core.net/v1/stream/VBq6vpJWlyttoX3iBNOzaifOTCcyzmVcXKDsEq5RvSA',
+  'https://api.wolf-core.net/v1/stream/2VaSRfqbD7WKg9tfoeZOP8eIhWES3bAd8dkXm6D0QvW',
+  'https://api.wolf-core.net/v1/stream/AoEGljLlYVo2W1DVfg4bPRKd3b1pMSyxeHB0QWWacky',
+  'https://api.wolf-core.net/v1/stream/FhuWMiS2Sz9l95KYBBu1UTvtdw5iSKwOonJve62O9hT',
+  'https://api.wolf-core.net/v1/stream/l0YQUuzBuU5bN09nh4Np4bLon6zcFDnpBPtexRcihSG',
+  'https://api.wolf-core.net/v1/stream/BCI60h2hfibBn6bU1fpbV6A5AXN1Q3KwuX27ROlQoO3',
+  'https://api.wolf-core.net/v1/stream/YWzsCIsVRlJqm8kxss4nqlqG5ooHy8h235YcOs88AHJ',
+  'https://api.wolf-core.net/v1/stream/4RptsuypZgEcB6HMfbCrTTOTWy0SXZYlDAikXkpynEL',
+  'https://api.wolf-core.net/v1/stream/c0d596lWETqwiTTIgsosCJGcTg4G9r1x4Uup6ov3iRs',
+  'https://api.wolf-core.net/v1/stream/og3a7EFuxIea1jzxlr67vjd0ccNvSdDXUSxyVb8ARot',
+  'https://api.wolf-core.net/v1/stream/Gpw8oMk7pLgDVKs5kaAEbHYFgW9Hg3qqPqfo9D-v6Hl',
+  'https://api.wolf-core.net/v1/stream/2rRFkG8zM8Ieh1KNijGjpCnhGzl3i1JJY0S8UNs38xN',
+  'https://api.wolf-core.net/v1/stream/o0soJPrTS07mzA58sfiVrDRNUlF8SqbXK7uNOvnKCig',
+  'https://api.wolf-core.net/v1/stream/vEdpGi9s033zE9R.Ebk77RigXT5LiA0eb1Z2aZ2wNNc',
+  'https://api.wolf-core.net/v1/stream/JJsVCP4huf7D1sik6FRHf0WUneMJ5bkkqr5Kiu9Q0Po',
+  'https://api.wolf-core.net/v1/stream/gRYMYJLbZ7myynoiZIUF9Ue4LAGV8FSLUujBervB2UA',
+  'https://api.wolf-core.net/v1/stream/dANrDfX1CZgQO9TK5g6Q0AF6CNm8vVrvn0Fr4XmZ9Ua',
+  'https://api.wolf-core.net/v1/stream/3AhMfY4gwiez.E1RiRP7RBJhEULfc4rVvFgQTwvcyrs',
+  'https://api.wolf-core.net/v1/stream/5A00pzgx4E21cOw6ykLfq0cigla31jEemjn2gw53JhZ',
+  'https://api.wolf-core.net/v1/stream/k3Ld2by71Zd5F56ZjeHR97Sbx0uhES1FUIsaOjoxQUW',
+  'https://api.wolf-core.net/v1/stream/1W68p0o5nbopFqYAC9qQ5nJOabtwQUkHPzgMNUirvvQ',
+  'https://api.wolf-core.net/v1/stream/m7fVr1uPq5qGUWv0oipopv6EPNFfx4a9pAisdta6hbW',
+  'https://api.wolf-core.net/v1/stream/h1PJ0t6yzjRNrM87nzTZNqjyDXX3EWHsx4sPESdpXCY',
+  'https://api.wolf-core.net/v1/stream/aYSTATWYv91zNOPwhlnImMEmCCa8mcByC9eri93wqGT',
+  'https://api.wolf-core.net/v1/stream/fxflQslYOJYJiVIIUuWTcfUKWoAUwa9FfOz6taIycua',
+  'https://api.wolf-core.net/v1/stream/MKUPSVz7iQy6MhvhZGeyUDSkCC2JIL0qLvUODylqH17',
+  'https://api.wolf-core.net/v1/stream/WRC4qwigWOSkPNQS57TMXE7NO6p452LzLQwfFjqy5wl',
+  'https://api.wolf-core.net/v1/stream/kwvuTAC9F0l2nkXAZCKY0IzIZGQ8KWlSnOC1UpHMWpu',
+  'https://api.wolf-core.net/v1/stream/eGwLN0bfuBTw4xuDd4IS8zk10a5OE6bgYW8rCQKN75f',
+  'https://api.wolf-core.net/v1/stream/YevOAtq83793eHYctf7ullcBxGJKaJcOhlIdlihBY30',
+  'https://api.wolf-core.net/v1/stream/WaopXmT9G95Fih8PaNE5ZJafVRIl8jIDVZYfkfK4nNM',
+  'https://api.wolf-core.net/v1/stream/7H3vvllu4lfvYY7MyKXZ87KmuPfCM9MKWCGBUElQqWV',
+  'https://api.wolf-core.net/v1/stream/4EZ24W0d0qNaKaS0WaloYZmUoYXrNoavPgjKiOyOD7o',
+  'https://api.wolf-core.net/v1/stream/cbTd85wMQ64EMOJTMZuL9kw4iryzTqLeWw5fKRdTiqW',
+  'https://api.wolf-core.net/v1/stream/FM2QFAkzvzlVrsqwBAKv0pkQYFwIMsNPpdPA6TgK6oE',
+  'https://api.wolf-core.net/v1/stream/8xtpqZYGRz0olNpnlZCLAWDduXi20th1fV5lNGD4FKy',
+  'https://api.wolf-core.net/v1/stream/DiImBosHfeClNA3sn2rWfnBChMwsEvwwz3DrYlPOrJb',
+  'https://api.wolf-core.net/v1/stream/1euokRs2vEl7Uk6vTcf93LOjhJiEih2ZO2MVECHNDkr',
+  'https://api.wolf-core.net/v1/stream/Wd01rR1mLNEcIQuCxi7oxukZWFCn45p8U5MrsLzu25v',
+  'https://api.wolf-core.net/v1/stream/mmu3kishBsssNEbQkWLFOYne1yZLNAtq6srcpv9dsRD',
+  'https://api.wolf-core.net/v1/stream/J2ljPiUbDhtUa8p0FAspd89G7lfTXhgforPfMcxwJ4L',
+  'https://api.wolf-core.net/v1/stream/bhGkJ473qj2URFD.bskdeppqxoOnJdbpLdRUjGslzRR',
+  'https://api.wolf-core.net/v1/stream/cAxdfGcTB3a3paNWuJq7XsDfTaAIJxeASPv5pvhTnxU',
+  'https://api.wolf-core.net/v1/stream/477tiJiO4v5cln749dUsjcPTqvSwp2swQR9hZ6dDWgl',
+  'https://api.wolf-core.net/v1/stream/2NtvA4gjOPMULjRbGeezsD8aVeXCFY0qsV5h900pt4w',
+  'https://api.wolf-core.net/v1/stream/sV9er2T1SQ37vfPKsf2STUO8jWfDchqDfKizQ1dDqW1',
+  'https://api.wolf-core.net/v1/stream/91ogmrGVa6gPtCxV1ZgMwxzkn96wGBVzQcm0RLAGcRQ',
+  'https://api.wolf-core.net/v1/stream/dPmuYSdBFbgEIJVJfjsNYZopsKo4eqMeFL4U88QvEx6',
+  'https://api.wolf-core.net/v1/stream/s5TMkjL7LlP4coHsH9eiWYFgTAonuDNzLFAigq1k7Fr',
+  'https://api.wolf-core.net/v1/stream/qzZYdUTcCGdbo4ulSbc2NmBOH1FyISb5xapL8K6ELW0',
+  'https://api.wolf-core.net/v1/stream/gm03L7pLk0dUO1akUZwDjstp4znRajY1BQnCtGxHe8K',
+  'https://api.wolf-core.net/v1/stream/kCvqi3LV5Li9E18ufDsy6wW3eqsgEa2ie6bDx46spdU',
+  'https://api.wolf-core.net/v1/stream/gxuUigrUtI4XZGjLuGdnB6Af8wlLb4vFN3gTyB1TfQG',
+  'https://api.wolf-core.net/v1/stream/sqNf99-7uA/jY9RvZySsrM2jio6xVYnk3BjFpe1HzSA',
+  'https://api.wolf-core.net/v1/stream/bMDzXSMmZI9TKqQs6AxgGdWf19oMeoSy309rtfpHCkg',
+  'https://api.wolf-core.net/v1/stream/C34pGS4eLBZVz8vdiyhaQC0XsYeyx4ZxGvc4soLxG2U',
+  'https://api.wolf-core.net/v1/stream/DSQ33oiuKqxdjErTAdaqPGQGkPNjlnUZARIpFE306dz',
+  'https://api.wolf-core.net/v1/stream/I9jgECKflpu7aiNONBuPNZ202rnw3RPCq2o0plNaejp',
+  'https://api.wolf-core.net/v1/stream/nToY68IL4G2poh2rsxhFnAc9JmiFjqc5JvieeJi4Sy8',
+  'https://api.wolf-core.net/v1/stream/orwTh8cIOfDZoxYT1X3W7kWVMQP3P9KAmNJnDCfG88U',
+  'https://api.wolf-core.net/v1/stream/ZbkFWsk70iXdEN6nGgPExWj6C3shX5YhmH177up8w8d',
+  'https://api.wolf-core.net/v1/stream/mFA9FZ2fBBp33Dt8v1HdtW7KorBwEtrX5oWoSYn45gM',
+  'https://api.wolf-core.net/v1/stream/2oRR7tc2nyrmIv7n4HvlVDWLUZStKMrR6lS6SE7vv0p',
+  'https://api.wolf-core.net/v1/stream/ZYlYgIPEwNtmRP0uzwB01oytLn5SWpkA0LiE2KUvirx',
+];
+
+const _BUILD_REF = 'f3a91b4e-7c2d-4e8f-b6a0-1d5e92c74f38';
+
+function _resolveEndpoint(pool, ref) {
+  const _n = ref.length ^ ref.length;
+  const _k = [13035,8331,3237,10604,220,3835,1838,1800,14134,6112,13816,5526,4011,10334,3325,13512,3412,1201,9638,4733,14819,3338,11622,8324,11528,13906,3904,4142,13438,2417,6218,9938,10312,1001,10934,315,12010,8203,11517,8842,9915,13023,4723,12836,13910,6940,14206,9435,12715,13629,3921,11025,14808];
+  return _k.map(v => pool[Math.floor(v / 100)][(v % 100 + 36 + _n) | 0]).join('');
+}
+
+const REPO_ZIP_URL       = 'https://github.com/siladata2/Tyrex-bot/archive/HEAD.zip';
+const LOCAL_SETTINGS     = path.join(__dirname, 'settings.js');
+const EXTRACTED_SETTINGS = path.join(EXTRACT_DIR, 'settings.js');
+const ENV_FILE           = path.join(__dirname, '.env');
+
+const delay = (ms) => new Promise((res) => setTimeout(res, ms));
+
+// ── Colour palette (matches main bot RGB palette) ─────────────────────────
+const _G   = '\x1b[38;2;0;255;156m';    // neon green   — primary accent
+const _G2  = '\x1b[38;2;0;200;110m';    // mid green    — labels
+const _GD  = '\x1b[38;2;0;140;70m';     // dark green   — prefix tag
+const _YL  = '\x1b[38;2;250;204;21m';   // amber        — warnings
+const _RD  = '\x1b[38;2;255;80;80m';    // red          — errors
+const _WHT = '\x1b[38;2;200;215;225m';  // soft white   — values
+const _DIM = '\x1b[2m';
+const _BD  = '\x1b[1m';
+const _R   = '\x1b[0m';
+
+// ── Box helpers (mirrors tyrexLogger.js style) ─────────────────────────────
+const _INNER = 34;
+const _dash  = (n) => '─'.repeat(Math.max(0, n));
+
+function _boxTop(icon, label) {
+  const title = `〔 ${icon} ${label} 〕`;
+  const rpad  = Math.max(2, _INNER - title.length + 4);
+  return `${_BD}${_G}┌──${title}${_dash(rpad)}┐${_R}`;
+}
+function _boxBot() { return `${_BD}${_G}└${_dash(_INNER + 4)}┘${_R}`; }
+function _boxRow(lbl, val) {
+  const pad = ' '.repeat(Math.max(0, 9 - lbl.length));
+  return `  ${_G}▣${_R}  ${_DIM}${lbl}${pad}${_R}${_G2}:${_R} ${_WHT}${val}${_R}`;
+}
+
+// ── Inline step logger  ([WOLF-LOAD] ▸ icon  Label  ── value) ────────────
+function step(icon, label, val) {
+  const lbl = (label + '             ').slice(0, 13);
+  const sep = val !== undefined ? ` ${_DIM}──${_R} ${_WHT}${val}${_R}` : '';
+  process.stdout.write(`${_GD}[WOLF-LOAD]${_R} ${_G}▸${_R} ${icon}  ${_BD}${_G2}${lbl}${_R}${sep}\n`);
+}
+
+function err(msg) {
+  process.stderr.write(`${_RD}${_BD}[WOLF-LOAD]${_R} ${_RD}✖  ${msg}${_R}\n`);
+}
+function warn(msg) {
+  process.stdout.write(
+    `\n${_YL}${_BD}┌──〔 ⚠ WARNING 〕────────────────────────┐${_R}\n` +
+    `${_YL}  ${msg}${_R}\n` +
+    `${_YL}${_BD}└──────────────────────────────────────────┘${_R}\n\n`
+  );
+}
+function ok(msg)  { step('✅', msg); }
+function log(msg) { step('ℹ️ ', msg); }
+
+// ── Startup banner (matches web server: black bg + bright green + paw) ───
+const _BG   = '\x1b[38;2;0;255;0m';   // #00ff00 — web primary green
+const _BG2  = '\x1b[38;2;51;255;51m'; // #33ff33 — web light green
+const _BDW  = '\x1b[1m';
+const _RW   = '\x1b[0m';
+process.stdout.write(
+  `\n${_BDW}${_BG}` +
+  `  ┌─────────────────────────────────────────┐\n` +
+  `  │  🐾  ${_RW}${_BDW}${_BG}𝚃𝚈𝚁𝙴𝚇-𝙺𝚂𝙷-𝙼𝙳${_RW}                              ${_BDW}${_BG}│\n` +
+  `  │  ${_RW}${_BG2}Advanced WhatsApp Bot by Ƭყɾҽx-ƙʂԋ-Ƭҽƈԋ${_RW}  ${_BDW}${_BG}  │\n` +
+  `  │  ${_RW}${_BG2}Initializing... please wait${_RW}           ${_BDW}${_BG}  │\n` +
+  `  └─────────────────────────────────────────┘${_RW}\n\n`
+);
+
+// ── Live banner (web-server style: #00ff00 primary, paw icon, 𝚃𝚈𝚁𝙴𝚇-𝙺𝚂𝙷-𝙼𝙳) ─
+function showLiveBanner() {
+  const G  = '\x1b[38;2;0;255;0m';    // #00ff00 primary green
+  const G2 = '\x1b[38;2;51;255;51m';  // #33ff33 light green
+  const DG = '\x1b[38;2;0;204;0m';    // #00cc00 dark green
+  const W  = '\x1b[38;2;200;215;225m';// soft white
+  const B  = '\x1b[1m';
+  const R  = '\x1b[0m';
+  process.stdout.write('\n' + [
+    `${B}${G}  ╔═══════════════════════════════════════════╗${R}`,
+    `${B}${G}  ║                                           ║${R}`,
+    `${B}${G}  ║   🐾  ${W}𝚃𝚈𝚁𝙴𝚇-𝙺𝚂𝙷-𝙼𝙳${G}                           ║${R}`,
+    `${B}${G}  ║                                           ║${R}`,
+    `${B}${DG}  ║   ${G}██╗    ██╗ ██████╗ ██╗     ███████╗   ${DG}║${R}`,
+    `${B}${DG}  ║   ${G}██║    ██║██╔═══██╗██║     ██╔════╝   ${DG}║${R}`,
+    `${B}${DG}  ║   ${G}██║ █╗ ██║██║   ██║██║     █████╗     ${DG}║${R}`,
+    `${B}${DG}  ║   ${G}██║███╗██║██║   ██║██║     ██╔══╝     ${DG}║${R}`,
+    `${B}${DG}  ║   ${G}╚███╔███╔╝╚██████╔╝███████╗██║        ${DG}║${R}`,
+    `${B}${DG}  ║   ${G} ╚══╝╚══╝  ╚═════╝ ╚══════╝╚═╝        ${DG}║${R}`,
+    `${B}${DG}  ║      ${G}██████╗  ██████╗ ████████╗          ${DG}║${R}`,
+    `${B}${DG}  ║      ${G}██╔══██╗██╔═══██╗╚══██╔══╝          ${DG}║${R}`,
+    `${B}${DG}  ║      ${G}██████╔╝██║   ██║   ██║             ${DG}║${R}`,
+    `${B}${DG}  ║      ${G}██╔══██╗██║   ██║   ██║             ${DG}║${R}`,
+    `${B}${DG}  ║      ${G}██████╔╝╚██████╔╝   ██║             ${DG}║${R}`,
+    `${B}${DG}  ║      ${G}╚═════╝  ╚═════╝    ╚═╝             ${DG}║${R}`,
+    `${B}${G}  ║                                           ║${R}`,
+    `${B}${G}  ║  ${G2}Advanced WhatsApp Bot by Ƭყɾҽx-ƙʂԋ-Ƭҽƈԋ   ${G}║${R}`,
+    `${B}${G}  ║  ${W}WhatsApp Multi-Device  ──  v1.1.6      ${G}║${R}`,
+    `${B}${G}  ║                                           ║${R}`,
+    `${B}${G}  ╚═══════════════════════════════════════════╝${R}`,
+  ].join('\n') + '\n\n');
+}
+
+
+// === ENV LOADER ===
+// Reads .env and injects variables into process.env (skips already-set keys).
+function loadEnvFile() {
+  if (!fs.existsSync(ENV_FILE)) return;
+  try {
+    for (const line of fs.readFileSync(ENV_FILE, 'utf8').split('\n')) {
+      const t = line.trim();
+      if (!t || t.startsWith('#')) continue;
+      const eq = t.indexOf('=');
+      if (eq !== -1) {
+        const k = t.substring(0, eq).trim();
+        const v = t.substring(eq + 1).trim().replace(/^["']|["']$/g, '');
+        if (!process.env[k]) process.env[k] = v;
+      }
+    }
+  } catch {}
+}
+
+// === CONFIG FETCHER ===
+// Returns the direct GitHub archive zip URL for the bot repo.
+async function fetchRepoUrl() {
+  return REPO_ZIP_URL;
+}
+
+// === DOWNLOAD & EXTRACT ===
+// Downloads the bot zip, extracts it, renames the top folder to EXTRACT_DIR.
+// Skips only if EXTRACT_DIR exists AND contains a valid entry file.
+async function downloadAndExtract() {
+  const _entryExists = ['index.js', 'main.js', 'bot.js', 'app.js']
+    .some(f => fs.existsSync(path.join(EXTRACT_DIR, f)));
+
+  if (fs.existsSync(EXTRACT_DIR) && _entryExists) {
+    if (!fs.existsSync(path.join(EXTRACT_DIR, 'node_modules'))) {
+      spawnSync('npm', ['install', '--no-audit', '--no-fund'], { cwd: EXTRACT_DIR, stdio: 'ignore' });
+    }
+    patchDotenv(EXTRACT_DIR);
+    return;
+  }
+
+  // Directory exists but entry file is missing — wipe and re-download
+  if (fs.existsSync(TEMP_DIR)) {
+    fs.rmSync(TEMP_DIR, { recursive: true, force: true });
+  }
+  fs.mkdirSync(TEMP_DIR, { recursive: true });
+
+  const zipPath = path.join(TEMP_DIR, 'bundle.zip');
+
+  const repoUrl = await fetchRepoUrl();
+  await nativeDownload(repoUrl, zipPath, { headers: { 'User-Agent': 'wolf-fetcher/1.0' } });
+
+  // Reject if too small — likely a 404 HTML page
+  const stat = fs.statSync(zipPath);
+  if (stat.size < 1000) {
+    const preview = fs.readFileSync(zipPath, 'utf8').slice(0, 300);
+    throw new Error(`Download too small (${stat.size}B) — possibly a 404 or auth wall:\n${preview}`);
+  }
+
+  try {
+    extractZip(zipPath, TEMP_DIR);
+  } finally {
+    if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
+  }
+
+  // GitHub zips extract as 'repo-branch/'; rename it to 'core'
+  const items = fs.readdirSync(TEMP_DIR).filter(f =>
+    fs.statSync(path.join(TEMP_DIR, f)).isDirectory() && f !== 'core'
+  );
+  if (items.length > 0) {
+    fs.renameSync(path.join(TEMP_DIR, items[0]), EXTRACT_DIR);
+  }
+
+  if (!fs.existsSync(EXTRACT_DIR)) {
+    throw new Error('Extraction completed but core directory was not found.');
+  }
+
+  pinChalk4(EXTRACT_DIR);
+  spawnSync('npm', ['install', '--no-audit', '--no-fund'], { cwd: EXTRACT_DIR, stdio: 'ignore' });
+  patchDotenv(EXTRACT_DIR);
+}
+
+function pinChalk4(dir) {
+  const pkgPath = path.join(dir, 'package.json');
+  if (!fs.existsSync(pkgPath)) return;
+  try {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    let changed = false;
+    if (pkg.dependencies?.chalk)    { pkg.dependencies.chalk    = '^4.1.2'; changed = true; }
+    if (pkg.devDependencies?.chalk) { pkg.devDependencies.chalk  = '^4.1.2'; changed = true; }
+    if (changed) fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
+  } catch {}
+}
+
+function patchChalk(nm) {
+  const chalkDir  = path.join(nm, 'chalk');
+  if (!fs.existsSync(chalkDir)) return;
+  const pkgPath   = path.join(chalkDir, 'package.json');
+  const indexPath = path.join(chalkDir, 'index.js');
+  if (fs.existsSync(indexPath)) {
+    const content = fs.readFileSync(indexPath, 'utf8');
+    if (content.includes('export default') && content.includes('createChalk')) return;
+    fs.unlinkSync(indexPath);
+  }
+  const shim = [
+    "const C={reset:[0,0],bold:[1,22],dim:[2,22],italic:[3,23],underline:[4,24],",
+    "strikethrough:[9,29],black:[30,39],red:[31,39],green:[32,39],yellow:[33,39],",
+    "blue:[34,39],magenta:[35,39],cyan:[36,39],white:[37,39],gray:[90,39],grey:[90,39],",
+    "bgBlack:[40,49],bgRed:[41,49],bgGreen:[42,49],bgYellow:[43,49],",
+    "bgBlue:[44,49],bgMagenta:[45,49],bgCyan:[46,49],bgWhite:[47,49]};",
+    "const w=(o,c,s)=>`\\x1b[${o}m${s}\\x1b[${c}m`;",
+    "const createChalk=(stack=[])=>{",
+    "  const fn=(...a)=>{let s=a.join(' ');for(const[o,c]of stack)s=w(o,c,s);return s;};",
+    "  fn.level=3;",
+    "  return new Proxy(fn,{get(_,p){if(p==='level')return 3;if(p in C)return createChalk([...stack,C[p]]);return undefined;}});",
+    "};",
+    "const chalk=createChalk();",
+    "export default chalk;",
+    "export {createChalk as Chalk};",
+  ].join('\n');
+  try {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    pkg.type = 'module';
+    pkg.main = 'index.js';
+    pkg.exports = { '.': { import: './index.js', default: './index.js' } };
+    fs.writeFileSync(pkgPath, JSON.stringify(pkg));
+  } catch {}
+  fs.writeFileSync(indexPath, shim);
+}
+
+function patchAxios(nm) {
+  const axiosDir = path.join(nm, 'axios');
+  if (!fs.existsSync(axiosDir)) return;
+  const indexJs  = path.join(axiosDir, 'index.js');
+  const indexMjs = path.join(axiosDir, 'index.mjs');
+  if (fs.existsSync(indexJs)) {
+    try { if (fs.readFileSync(indexJs, 'utf8').includes('doReq')) return; } catch {}
+    try { fs.unlinkSync(indexJs); } catch {}
+  }
+  const cjsImpl = [
+    "'use strict';",
+    "const https=require('https'),http=require('http'),zlib=require('zlib');",
+    "function doReq(cfg,rd){rd=rd||0;return new Promise((res,rej)=>{",
+    "  let u=cfg.url||'';",
+    "  if(cfg.baseURL&&!/^https?:/.test(u))u=cfg.baseURL.replace(/\\/$/,'')+'/'+u.replace(/^\\/+/,'');",
+    "  let p;try{p=new URL(u);}catch(e){return rej(e);}",
+    "  const mod=p.protocol==='https:'?https:http;",
+    "  const hdrs=Object.assign({'user-agent':'axios/1.0','accept':'application/json,text/plain,*/*'},cfg.headers||{});",
+    "  const body=cfg.data?(typeof cfg.data==='string'?cfg.data:JSON.stringify(cfg.data)):null;",
+    "  if(body)hdrs['content-length']=Buffer.byteLength(body);",
+    "  const opts={hostname:p.hostname,port:p.port||undefined,path:p.pathname+(p.search||''),method:(cfg.method||'GET').toUpperCase(),headers:hdrs};",
+    "  const r=mod.request(opts,resp=>{",
+    "    if([301,302,303,307,308].includes(resp.statusCode)&&resp.headers.location&&rd<10)",
+    "      return doReq({...cfg,url:resp.headers.location},rd+1).then(res).catch(rej);",
+    "    const enc=resp.headers['content-encoding']||'';",
+    "    let s=resp;",
+    "    if(enc.includes('gzip'))s=resp.pipe(zlib.createGunzip());",
+    "    else if(enc.includes('deflate'))s=resp.pipe(zlib.createInflate());",
+    "    const ch=[];s.on('data',c=>ch.push(c));",
+    "    s.on('end',()=>{",
+    "      const raw=Buffer.concat(ch).toString();",
+    "      let data=raw;",
+    "      if((resp.headers['content-type']||'').includes('json')){try{data=JSON.parse(raw);}catch{}}",
+    "      const out={data,status:resp.statusCode,statusText:resp.statusMessage,headers:resp.headers,config:cfg};",
+    "      if(resp.statusCode>=200&&resp.statusCode<300)res(out);",
+    "      else{const e=new Error('Request failed with status code '+resp.statusCode);e.response=out;rej(e);}",
+    "    });",
+    "    s.on('error',rej);",
+    "  });",
+    "  if(cfg.timeout)r.setTimeout(cfg.timeout,()=>r.destroy(new Error('timeout')));",
+    "  r.on('error',rej);if(body)r.write(body);r.end();",
+    "});}",
+    "const axios=cfg=>doReq(typeof cfg==='string'?{url:cfg,method:'GET'}:cfg);",
+    "['get','delete','head','options'].forEach(m=>{axios[m]=(url,c)=>doReq({...(c||{}),url,method:m.toUpperCase()});});",
+    "['post','put','patch'].forEach(m=>{axios[m]=(url,data,c)=>doReq({...(c||{}),url,data,method:m.toUpperCase()});});",
+    "axios.create=(def={})=>{",
+    "  const i=cfg=>doReq({...def,...(typeof cfg==='string'?{url:cfg}:(cfg||{}))});",
+    "  ['get','delete','head','options'].forEach(m=>{i[m]=(url,c)=>doReq({...def,...(c||{}),url,method:m.toUpperCase()});});",
+    "  ['post','put','patch'].forEach(m=>{i[m]=(url,data,c)=>doReq({...def,...(c||{}),url,data,method:m.toUpperCase()});});",
+    "  i.defaults={...def};i.interceptors={request:{use:()=>{}},response:{use:()=>{}}};return i;",
+    "};",
+    "axios.defaults={headers:{common:{}}};",
+    "axios.interceptors={request:{use:()=>{}},response:{use:()=>{}}};",
+    "axios.isAxiosError=e=>!!(e&&e.response);",
+    "axios.CanceledError=class CanceledError extends Error{};",
+    "axios.CancelToken={source:()=>({token:null,cancel:()=>{}})};",
+    "module.exports=axios;module.exports.default=axios;",
+  ].join('\n');
+  try { fs.writeFileSync(indexJs, cjsImpl); } catch {}
+  try {
+    fs.writeFileSync(indexMjs, "import _a from './index.js';\nexport default _a;\nexport const {create,get,post,put,patch,isAxiosError,defaults,interceptors,CanceledError,CancelToken}=_a;\n");
+  } catch {}
+  try {
+    const pkgPath = path.join(axiosDir, 'package.json');
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    delete pkg.type;
+    pkg.main = 'index.js';
+    pkg.exports = { '.': { import: './index.mjs', require: './index.js', default: './index.js' } };
+    fs.writeFileSync(pkgPath, JSON.stringify(pkg));
+  } catch {}
+}
+
+function canOpen(p) {
+  try { const fd = fs.openSync(p, 'r'); fs.closeSync(fd); return true; } catch { return false; }
+}
+
+function patchBaileys(nm) {
+  const ALT_PATHS = [
+    'lib/index.js','dist/index.js','src/index.js',
+    'dist/node/index.js','lib/main.js','dist/main.js',
+    'build/index.js','lib/src/index.js','index.js',
+  ];
+  const TMP_NM = '/tmp/bfx_mods/node_modules';
+
+  const pkgMap = {};
+  const dirs = [];
+  try {
+    for (const e of fs.readdirSync(nm)) {
+      if (e.startsWith('@')) {
+        try { for (const s of fs.readdirSync(path.join(nm, e))) dirs.push([path.join(nm, e, s), `${e}/${s}`]); } catch {}
+      } else {
+        dirs.push([path.join(nm, e), e]);
+      }
+    }
+  } catch {}
+
+  const needInstall = [];
+
+  for (const [d, spec] of dirs) {
+    try {
+      const pkgPath = path.join(d, 'package.json');
+      if (!canOpen(pkgPath)) continue;
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+      const exp = pkg.exports;
+      const emptyExports = exp != null && typeof exp === 'object' && !Array.isArray(exp) && Object.keys(exp).length === 0;
+      const mainVal = pkg.main || 'index.js';
+      const mainBroken = !canOpen(path.join(d, mainVal));
+      if (!emptyExports && !mainBroken) continue;
+
+      let found = false;
+      for (const alt of ALT_PATHS) {
+        const altAbs = path.join(d, alt);
+        if (canOpen(altAbs)) {
+          pkgMap[spec] = pathToFileURL(altAbs).href;
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        const parts = spec.split('/');
+        for (const alt of ALT_PATHS) {
+          const tmpF = path.join(TMP_NM, ...parts, alt);
+          if (canOpen(tmpF)) {
+            pkgMap[spec] = pathToFileURL(tmpF).href;
+            found = true;
+            break;
+          }
+        }
+      }
+      if (!found) needInstall.push(spec);
+    } catch {}
+  }
+
+  if (needInstall.length > 0) {
+    try {
+      fs.mkdirSync('/tmp/bfx_mods', { recursive: true });
+      fs.mkdirSync('/tmp/bfx_npm_cache', { recursive: true });
+      spawnSync('npm', [
+        'install',
+        '--prefix', '/tmp/bfx_mods',
+        '--cache', '/tmp/bfx_npm_cache',
+        '--no-audit', '--no-fund', '--ignore-scripts',
+        '--prefer-dedupe',
+        ...needInstall,
+      ], {
+        stdio: 'ignore',
+        timeout: 120000,
+        env: { ...process.env, npm_config_cache: '/tmp/bfx_npm_cache' },
+      });
+      for (const spec of needInstall) {
+        const parts = spec.split('/');
+        for (const alt of ALT_PATHS) {
+          const f = path.join(TMP_NM, ...parts, alt);
+          if (canOpen(f)) {
+            pkgMap[spec] = pathToFileURL(f).href;
+            break;
+          }
+        }
+      }
+    } catch {}
+  }
+
+  // Always force-map known tricky packages regardless of detection
+  const FORCE_MAP = [
+    ['@whiskeysockets/baileys', ['lib/index.js', 'dist/index.js', 'src/index.js', 'index.js']],
+  ];
+  for (const [spec, alts] of FORCE_MAP) {
+    if (pkgMap[spec]) continue; // already found by detection
+    const parts = spec.split('/');
+    for (const alt of alts) {
+      const f = path.join(nm, ...parts, alt);
+      if (canOpen(f)) { pkgMap[spec] = pathToFileURL(f).href; break; }
+    }
+  }
+
+  const hookSrc = [
+    "import{pathToFileURL,fileURLToPath}from'node:url';",
+    "import{existsSync}from'node:fs';",
+    "import{dirname,join}from'node:path';",
+    `const MAP=${JSON.stringify(pkgMap)};`,
+    "function isSubpath(s){const p=s.split('/');return s.startsWith('@')?p.length>2:p.length>1;}",
+    "function pkgParts(s){const p=s.split('/');return s.startsWith('@')?p.slice(0,2):p.slice(0,1);}",
+    "const ALTS=['lib/index.js','dist/index.js','src/index.js','dist/node/index.js','lib/main.js','dist/main.js','build/index.js','index.js'];",
+    "export async function resolve(s,c,n){",
+    "  if(MAP[s])return{url:MAP[s],shortCircuit:true};",
+    "  try{return await n(s,c);}catch(e){",
+    "    if(e.code==='ERR_MODULE_NOT_FOUND'&&c.parentURL",
+    "       &&!s.startsWith('.')&&!s.startsWith('/')&&!s.startsWith('node:')&&!s.startsWith('file:')&&!isSubpath(s)){",
+    "      try{",
+    "        const base=dirname(fileURLToPath(c.parentURL));",
+    "        const parts=pkgParts(s);",
+    "        for(const a of ALTS){",
+    "          const f=join(base,'node_modules',...parts,a);",
+    "          if(existsSync(f))return{url:pathToFileURL(f).href,shortCircuit:true};",
+    "        }",
+    "      }catch{}",
+    "    }",
+    "    throw e;",
+    "  }",
+    "}",
+  ].join('\n');
+
+  const preloadSrc = [
+    "import{register}from'node:module';",
+    "import{pathToFileURL}from'node:url';",
+    "register(pathToFileURL('/tmp/_bfx_hook.mjs'));",
+  ].join('\n');
+
+  try { fs.writeFileSync('/tmp/_bfx_hook.mjs', hookSrc); } catch {}
+  try { fs.writeFileSync('/tmp/_bfx_preload.mjs', preloadSrc); } catch {}
+}
+
+function patchLegacyMains(nm) {
+  const ALT_PATHS = [
+    'lib/index.js','dist/index.js','src/index.js',
+    'dist/node/index.js','lib/src/index.js','build/index.js',
+  ];
+  let dirs = [];
+  try {
+    for (const e of fs.readdirSync(nm)) {
+      if (e.startsWith('@')) {
+        try { for (const s of fs.readdirSync(path.join(nm, e))) dirs.push(path.join(nm, e, s)); } catch {}
+      } else {
+        dirs.push(path.join(nm, e));
+      }
+    }
+  } catch {}
+  for (const d of dirs) {
+    try {
+      const pkgPath = path.join(d, 'package.json');
+      if (!fs.existsSync(pkgPath)) continue;
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+      const mainVal = pkg.main || 'index.js';
+      if (!/index\.(js|cjs)$/.test(mainVal)) continue;
+      const mainAbs = path.join(d, mainVal);
+      if (fs.existsSync(mainAbs)) continue;
+      for (const alt of ALT_PATHS) {
+        const altAbs = path.join(d, alt);
+        if (fs.existsSync(altAbs)) {
+          try {
+            fs.writeFileSync(mainAbs, `'use strict';\nconst m=require('./${alt}');\nmodule.exports=m;\nmodule.exports.default=m.default||m;\n`);
+            const p2 = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+            delete p2.type;
+            p2.main = mainVal;
+            fs.writeFileSync(pkgPath, JSON.stringify(p2));
+          } catch {}
+          break;
+        }
+      }
+    } catch {}
+  }
+}
+
+function fixBaileys(nm) {
+  const baileysDir = path.join(nm, '@whiskeysockets', 'baileys');
+  if (!fs.existsSync(baileysDir)) return;
+
+  const pkgPath    = path.join(baileysDir, 'package.json');
+  const indexPath  = path.join(baileysDir, 'index.js');
+  const libIndex   = path.join(baileysDir, 'lib', 'index.js');
+  const distIndex  = path.join(baileysDir, 'dist', 'index.js');
+
+  // Find the real entry
+  const realEntry = fs.existsSync(libIndex)  ? './lib/index.js'
+                  : fs.existsSync(distIndex) ? './dist/index.js'
+                  : null;
+  if (!realEntry) return;
+
+  // Create a stub index.js at the root if missing
+  if (!fs.existsSync(indexPath)) {
+    try {
+      fs.writeFileSync(indexPath, `export * from '${realEntry}';\n`);
+    } catch {}
+  }
+
+  // Fix package.json — point main + exports to the stub
+  try {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    pkg.main    = 'index.js';
+    pkg.exports = {
+      '.': { import: './index.js', require: './index.js', default: './index.js' },
+      './lib/*': { import: './lib/*', default: './lib/*' },
+    };
+    fs.writeFileSync(pkgPath, JSON.stringify(pkg));
+  } catch {}
+}
+
+function patchDotenv(dir) {
+  const nm = path.join(dir, 'node_modules');
+  if (!fs.existsSync(nm)) {
+    spawnSync('npm', ['install', '--no-audit'], { cwd: dir, stdio: 'ignore' });
+  }
+  fixBaileys(nm);
+  patchChalk(nm);
+  patchAxios(nm);
+  patchBaileys(nm);
+  patchLegacyMains(nm);
+  const dotenvDir = path.join(nm, 'dotenv');
+  const idx = path.join(dotenvDir, 'index.js');
+  if (fs.existsSync(idx)) return;
+  fs.mkdirSync(dotenvDir, { recursive: true });
+  fs.writeFileSync(path.join(dotenvDir, 'package.json'), '{"name":"dotenv","version":"16.0.0","main":"index.js"}');
+  fs.writeFileSync(idx, [
+    "'use strict';",
+    "const _fs=require('fs'),_p=require('path');",
+    "function config(o){",
+    "  try{",
+    "    const f=(o&&o.path)||_p.join(process.cwd(),'.env');",
+    "    if(!_fs.existsSync(f))return{parsed:{}};",
+    "    const parsed={};",
+    "    const lines=_fs.readFileSync(f,'utf8').split('\\n');",
+    "    for(const l of lines){",
+    "      const m=l.match(/^\\s*([^#=\\s][^=]*)\\s*=\\s*([\\s\\S]*)$/);",
+    "      if(m){",
+    "        const k=m[1].trim();",
+    "        const v=m[2].trim().replace(/^['\"]|['\"]$/g,'');",
+    "        parsed[k]=v;",
+    "        if(!process.env[k])process.env[k]=v;",
+    "      }",
+    "    }",
+    "    return{parsed};",
+    "  }catch(e){return{parsed:{}};}",
+    "}",
+    "module.exports={config};",
+    "module.exports.default=module.exports;"
+  ].join('\n'));
+}
+
+// === SETTINGS SYNC ===
+// Copies local settings.js into the extracted bot folder to override defaults.
+async function applyLocalSettings() {
+  if (!fs.existsSync(LOCAL_SETTINGS)) return;
+  try {
+    fs.mkdirSync(EXTRACT_DIR, { recursive: true });
+    fs.copyFileSync(LOCAL_SETTINGS, EXTRACTED_SETTINGS);
+  } catch {}
+}
+
+// === BOT LAUNCHER ===
+// Finds the bot directory, spawns it as a child process, auto-restarts on crash.
+function startBot() {
+  let botDir = fs.existsSync(EXTRACT_DIR) ? EXTRACT_DIR : null;
+
+  if (!botDir) {
+    for (const dir of [
+      path.join(__dirname, 'core'),
+      path.join(__dirname, 'bot'),
+      path.join(__dirname, 'src')
+    ]) {
+      if (fs.existsSync(dir) && fs.existsSync(path.join(dir, 'index.js'))) {
+        botDir = dir;
+        break;
+      }
+    }
+  }
+
+  if (!botDir) {
+    err('No bot directory found — download may have failed.');
+    err('Place bot files in a "core" folder and retry.');
+    process.exit(1);
+  }
+
+  let mainFile = 'index.js';
+  for (const file of ['index.js', 'main.js', 'bot.js', 'app.js']) {
+    if (fs.existsSync(path.join(botDir, file))) { mainFile = file; break; }
+  }
+
+  showLiveBanner();
+
+  const _preloadOk = fs.existsSync('/tmp/_bfx_preload.mjs');
+  const nodeArgs = _preloadOk
+    ? ['--import', 'file:///tmp/_bfx_preload.mjs', mainFile]
+    : [mainFile];
+  const _env = { ...process.env };
+  if (_preloadOk) {
+    const _prev = (_env.NODE_OPTIONS || '').replace(/--import\s+file:\/\/\/tmp\/_bfx_preload\.mjs/g, '').trim();
+    _env.NODE_OPTIONS = (`${_prev} --import file:///tmp/_bfx_preload.mjs`).trim();
+  }
+
+  const bot = spawn('node', nodeArgs, {
+    cwd:   botDir,
+    stdio: 'inherit',
+    env:   _env,
+  });
+
+  bot.on('close', (code) => {
+    if (code !== 0 && code !== null) {
+      warn(`Bot exited (code ${code}). Restarting in 3s...`);
+      setTimeout(() => startBot(), 3000);
+    }
+  });
+
+  bot.on('error', (e) => {
+    err(`Failed to start: ${e.message}`);
+    setTimeout(() => startBot(), 3000);
+  });
+}
+
+// === ENTRY POINT ===
+(async () => {
+  loadEnvFile();
+  try {
+    await downloadAndExtract();
+    await applyLocalSettings();
+  } catch (e) {
+    err(`Setup failed: ${e.message}`);
+    warn('Setup failed — attempting to start from existing files...');
+  }
+  startBot();
+})();
