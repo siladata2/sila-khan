@@ -4256,7 +4256,7 @@ function parseTyrexSession(sessionString) {
         
         cleanedSession = cleanedSession.replace(/^["']|["']$/g, '');
         
-        const sessionPrefix = ['TYREX:', 'WOLF-BOT:'].find(prefix => cleanedSession.startsWith(prefix));
+        const sessionPrefix = ['TYREX-KSH-MD~', 'SILA-MD~'].find(prefix => cleanedSession.startsWith(prefix));
         if (sessionPrefix) {
             UltraCleanLogger.info(`🔍 Detected ${sessionPrefix} session prefix`);
             let base64Part = cleanedSession.slice(sessionPrefix.length).trim();
@@ -4297,8 +4297,8 @@ function setupHerokuSession() {
         if (herokuSessionId && herokuSessionId.trim() !== '') {
             UltraCleanLogger.success('🚀 Detected Heroku deployment with SESSION_ID');
             
-            // Accept the new TYREX label and the legacy WOLF-BOT label.
-            const sessionPrefix = ['TYREX:', 'WOLF-BOT:'].find(prefix => herokuSessionId.startsWith(prefix));
+            // Accept the new TYREX label and the legacy  label.
+            const sessionPrefix = ['TYREX-KSH-MD~', 'SILA-MD~'].find(prefix => herokuSessionId.startsWith(prefix));
             if (sessionPrefix) {
                 UltraCleanLogger.info(`🔐 Processing ${sessionPrefix} session format...`);
                 
