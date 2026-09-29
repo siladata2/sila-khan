@@ -11,62 +11,62 @@
   ],
   "repository": "https://github.com/siladata2/Tyrex-bot",
   "scripts": {
-    "start": "node --no-warnings --experimental-global-webcrypto index.js"
+    "start": "node --no-warnings --expose-gc --max-old-space-size=1024 --experimental-global-webcrypto index.js"
   },
   "env": {
     "SESSION_ID": {
-      "description": "REQUIRED: Your WhatsApp session ID. New labels may begin with 'TYREX:~'. Existing 'WOLF-BOT:' sessions remain accepted.",
+      "description": "REQUIRED: Your WhatsApp session ID.",
       "value": "",
       "required": true
     },
     "DATABASE_URL": {
-      "description": "OPTIONAL: PostgreSQL connection string for persistent storage. Supports Heroku Postgres, Supabase, Neon, Railway, etc. Format: postgres://user:password@host:5432/dbname?sslmode=require — Leave blank to run on SQLite only.",
+      "description": "OPTIONAL: PostgreSQL connection string. Leave blank to use SQLite.",
       "value": "",
       "required": false
     },
     "PTERODACTYL_KEY": {
-      "description": "OPTIONAL: Your Pterodactyl Application API key (ptlc_...). Only needed if you use panel commands.",
+      "description": "OPTIONAL: Your Pterodactyl Application API key.",
       "value": "",
       "required": false
     },
     "PTERODACTYL_URL": {
-      "description": "OPTIONAL: Your Pterodactyl panel URL (e.g. https://panel.example.com). Only needed if you use panel commands.",
+      "description": "OPTIONAL: Your Pterodactyl panel URL.",
       "value": "",
       "required": false
     },
     "PAYSTACK_KEY": {
-      "description": "OPTIONAL: Your Paystack secret key (sk_live_... or sk_test_...). Only needed for M-Pesa STK push payments.",
+      "description": "OPTIONAL: Your Paystack secret key.",
       "value": "",
       "required": false
     },
     "BOT_PREFIX": {
-      "description": "OPTIONAL: Command prefix for the bot (e.g. . or ! or ?). Defaults to '.' if not set. Automatically updated when you use .setprefix.",
+      "description": "OPTIONAL: Command prefix. Defaults to '.'.",
       "value": ".",
       "required": false
     },
     "BOT_MODE": {
-      "description": "OPTIONAL: Bot operating mode. Options: public, private, group, solo, sudo, super, buttons, channel. Defaults to 'public'. Automatically updated when you use .setmode.",
+      "description": "OPTIONAL: Bot operating mode.",
       "value": "public",
       "required": false
     },
     "BOT_NAME": {
-      "description": "OPTIONAL: Display name for the bot shown in menus and messages. Defaults to '𝚃𝚈𝚁𝙴𝚇-𝙺𝚂𝙷-𝙼𝙳'. Automatically updated when you use .setbotname.",
+      "description": "OPTIONAL: Display name for the bot.",
       "value": "𝚃𝚈𝚁𝙴𝚇-𝙺𝚂𝙷-𝙼𝙳",
       "required": false
     },
     "BOT_TIMEZONE": {
-      "description": "OPTIONAL: Timezone for time/date display in menus (e.g. Africa/Lagos, Asia/Kolkata, America/New_York). Defaults to UTC. Automatically updated when you use .settimezone.",
-      "value": "UTC",
+      "description": "OPTIONAL: Timezone used by the bot.",
+      "value": "Africa/Dar_es_Salaam",
       "required": false
     },
     "OWNER_NUMBER": {
-      "description": "OPTIONAL: Your WhatsApp number in international format without + (e.g. 2348012345678). Used to scope settings to your bot instance and grant owner privileges.",
+      "description": "OPTIONAL: Owner WhatsApp number without +.",
       "value": "255610744352",
       "required": false
     }
   },
   "formation": {
-    "web": {
+    "worker": {
       "quantity": 1,
       "size": "basic"
     }
@@ -74,9 +74,6 @@
   "buildpacks": [
     {
       "url": "heroku/nodejs"
-    },
-    {
-      "url": "https://github.com/DuckyTeam/heroku-buildpack-imagemagick.git"
     },
     {
       "url": "https://github.com/jonathanong/heroku-buildpack-ffmpeg-latest.git"
