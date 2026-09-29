@@ -1,6 +1,6 @@
 {
   "name": "𝚃𝚈𝚁𝙴𝚇-𝙺𝚂𝙷-𝙼𝙳",
-  "description": "𝚃𝚈𝚁𝙴𝚇-𝙺𝚂𝙷-𝙼𝙳 WhatsApp bot by Ƭყɾҽx-ƙʂԋ-Ƭҽƈԋ",
+  "description": "𝚃𝚈𝚁𝙴𝚇-𝙺𝚂𝙷-𝙼𝙳 WhatsApp bot by Ƭყɾҽx-ƙʂԋ-Ƭƈԋ",
   "logo": "https://raw.githubusercontent.com/siladata2/Tyrex-bot/refs/heads/main/tyrex/tyrex.jpeg",
   "keywords": [
     "whatsapp",
@@ -11,7 +11,7 @@
   ],
   "repository": "https://github.com/siladata2/Tyrex-bot",
   "scripts": {
-    "start": "node --no-warnings --expose-gc --max-old-space-size=1024 --experimental-global-webcrypto index.js"
+    "start": "node --no-warnings --expose-gc --max-old-space-size=1024 --max-semi-space-size=64 --experimental-global-webcrypto index.js"
   },
   "env": {
     "SESSION_ID": {
@@ -63,12 +63,6 @@
       "description": "OPTIONAL: Owner WhatsApp number without +.",
       "value": "255610744352",
       "required": false
-    }
-  },
-  "formation": {
-    "worker": {
-      "quantity": 1,
-      "size": "basic"
     }
   },
   "buildpacks": [
